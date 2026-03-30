@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "lib": ["es2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"],
+        "target": "es2022",
+        "module": "nodenext",
+        "outDir": "./dist",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": false,
+        "forceConsistentCasingInFileNames": true,
+        "moduleResolution": "node16",
+        "types": ["node", "debug"]
+    },
+    "include": ["./index.ts"],
+    "exclude": ["node_modules", "dist"]
+}
