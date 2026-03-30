@@ -143,7 +143,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
         this.emit('message', tally)
     }
 
-    constructPacket(tally: TallyMessage, sequence?: boolean): Buffer<ArrayBuffer> {
+    constructPacket(tally: Tally, sequence?: boolean): Buffer<ArrayBuffer> {
         let bufUMD = Buffer.alloc(12)
 
         if (tally.index !== 0 && !tally.index) {
@@ -197,7 +197,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
         }
     }
 
-    sendTallyUDP(ip: string, port: number, tally: TallyMessage, sequence?: boolean) {
+    sendTallyUDP(ip: string, port: number, tally: Tally, sequence?: boolean) {
         try {
             if (!ip || !port || !tally){
                 throw 'Missing Parameter from call sendTallyUDP()'
@@ -225,7 +225,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
         }
     }
 
-    sendTallyTCP(ip: string, port: number, tally: TallyMessage, sequence?: boolean) {
+    sendTallyTCP(ip: string, port: number, tally: Tally, sequence?: boolean) {
         try {
             if (!ip || !port || !tally){
                 throw 'Missing Parameter from call sendTallyTCP()'
