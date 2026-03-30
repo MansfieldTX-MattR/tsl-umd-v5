@@ -1,7 +1,10 @@
 import dgram from 'dgram'
 import net from 'net'
-import debug from 'debug'
+import { debug as createDebug } from 'debug'
 import { EventEmitter } from 'events';
+
+const debug = createDebug('tsl-umd-v5')
+
 
 export type TallyColor = 0 | 1 | 2 | 3
 export type TallyType = "rh_tally" | "text_tally" | "lh_tally";
@@ -64,16 +67,16 @@ class TSL5 extends EventEmitter<TSL5Events> {
 
         server.on('message',(msg, rinfo) => {
             this.processTally(msg, rinfo.address)
-            debug.log('UDP Message recieved: ', msg)
+            debug('UDP Message recieved: ', msg)
         })
 
         server.on('listening', () => {
             var address = server.address();
-            debug.log(`server listening ${address.address}:${address.port}`);
+            debug(`server listening ${address.address}:${address.port}`);
         });
 
         server.on('error', (err) => {
-            debug.log('UDP server error: ', err);
+            debug('UDP server error: ', err);
             throw err;
         });
     }
@@ -83,15 +86,15 @@ class TSL5 extends EventEmitter<TSL5Events> {
 
             socket.on('data', (data) => {
                 this.processTally(data, socket.remoteAddress)
-                debug.log('TCP Message recieved: ', data)
+                debug('TCP Message recieved: ', data)
             })
 
             socket.on('close', () => {
-                debug.log('TCP socket closed')
+                debug('TCP socket closed')
             })
 
             socket.on('error', (err) => {
-                debug.log('TCP server error: ', err);
+                debug('TCP server error: ', err);
                 throw err;
             })
         })
@@ -213,15 +216,15 @@ class TSL5 extends EventEmitter<TSL5Events> {
 
             client.send(msg, port, ip, function(error) {
                 if (error) {
-                    debug.log('Error sending TSL 5 UDP tally:', error)
+                    debug('Error sending TSL 5 UDP tally:', error)
                 } else {
-                    debug.log('TSL 5 UDP Data sent.')
+                    debug('TSL 5 UDP Data sent.')
                 }
                 client.close()
             });
         }
         catch (error) {
-            debug.log('Error sending TSL 5 UDP tally:', error);
+            debug('Error sending TSL 5 UDP tally:', error);
         }
     }
 
@@ -231,7 +234,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 throw 'Missing Parameter from call sendTallyTCP()'
             }
             if (sequence === undefined) {
-                debug.log('Adding DLE/STX sequence by default for TCP.')
+                debug('Adding DLE/STX sequence by default for TCP.')
                 sequence = true
             }
 
@@ -244,15 +247,15 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 client.write(msg)
                 client.end()
                 client.destroy()
-                debug.log('TSL 5 TCP Data sent.')
+                debug('TSL 5 TCP Data sent.')
 
             })
             client.on('error', (error) => {
-                debug.log('Error sending TSL 5 TCP tally:', error)
+                debug('Error sending TSL 5 TCP tally:', error)
             })
         }
         catch (error) {
-            debug.log('Error sending TSL 5 TCP tally:', error);
+            debug('Error sending TSL 5 TCP tally:', error);
         }
     }
 }
