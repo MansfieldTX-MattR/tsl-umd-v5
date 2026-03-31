@@ -21,7 +21,7 @@ export interface Tally {
     display?: TallyDisplay;
 }
 
-interface TallyMessage {
+export interface TallyMessage {
     sender?: string;
     pbc: number;
     ver: number;
