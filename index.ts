@@ -62,7 +62,10 @@ class TSL5 extends EventEmitter<TSL5Events> {
     }
 
     listenUDP(port: number) {
-        var server = dgram.createSocket('udp4')
+        const server = dgram.createSocket({
+            type: 'udp4',
+            reuseAddr: true,
+        })
         server.bind(port)
 
         server.on('message',(msg, rinfo) => {
