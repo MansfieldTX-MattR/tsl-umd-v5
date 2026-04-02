@@ -42,7 +42,7 @@ export interface TallyMessage {
 }
 
 interface TSL5Events {
-    message: [Tally];
+    message: [TallyMessage];
 }
 
 class TSL5 extends EventEmitter<TSL5Events> {
