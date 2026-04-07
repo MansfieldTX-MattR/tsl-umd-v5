@@ -44,19 +44,76 @@ export interface TallyMessage {
 interface TSL5Events {
     message: [TallyMessage];
 }
+interface MessageHeaderFieldInfo {
+    PBC: number;
+    VER: number;
+    FLAGS: number;
+    SCREEN: number;
+}
+interface MessageDmsgFieldInfo {
+    INDEX: number;
+    CONTROL: number;
+    LENGTH: number;
+}
+type MessageFieldInfo = MessageHeaderFieldInfo & MessageDmsgFieldInfo;
+type MessageFieldName = keyof MessageFieldInfo;
+
+
+const fieldSizes: MessageFieldInfo = {
+    PBC: 2,
+    VER: 1,
+    FLAGS: 1,
+    SCREEN: 2,
+    INDEX: 2,
+    CONTROL: 2,
+    LENGTH: 2,
+} as const;
+
+const fieldOffsets: MessageFieldInfo = {
+    PBC: 0,
+    VER: 2,
+    FLAGS: 3,
+    SCREEN: 4,
+    INDEX: 6,
+    CONTROL: 8,
+    LENGTH: 10,
+} as const;
+
+
+function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extraOffset: number = 0): number {
+    const offset = fieldOffsets[field] + extraOffset;
+    const size = fieldSizes[field];
+    switch (size) {
+        case 1:
+            return buf.readInt8(offset);
+        case 2:
+            return buf.readInt16LE(offset);
+        default:
+            throw new Error(`Unsupported field size: ${size}`);
+    }
+}
+
+function writeBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, value: number, extraOffset: number = 0): void {
+    const offset = fieldOffsets[field] + extraOffset;
+    const size = fieldSizes[field];
+    switch (size) {
+        case 1:
+            buf.writeInt8(value, offset);
+            break;
+        case 2:
+            buf.writeInt16LE(value, offset);
+            break;
+        default:
+            throw new Error(`Unsupported field size: ${size}`);
+    }
+}
+
+
 
 class TSL5 extends EventEmitter<TSL5Events> {
     private _DLE: number = 0xFE
     private _STX: number = 0x02
-
-    //Message Format
-    private _PBC: number = 0 //offset
     private _VER: number = 2
-    private _FLAGS: number = 3
-    private _SCREEN: number = 4
-    private _INDEX: number = 6
-    private _CONTROL: number = 8
-    private _LENGTH: number = 10
     constructor () {
         super()
     }
@@ -118,14 +175,15 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 }
               }
         }
-        const pbc = buf.readInt16LE(this._PBC)
-        const ver = buf.readInt8(this._VER)
-        const flags = buf.readInt8(this._FLAGS)
-        const screen = buf.readInt16LE(this._SCREEN)
-        const index = buf.readInt16LE(this._INDEX)
-        const control = buf.readInt16LE(this._CONTROL)
-        const length = buf.readInt16LE(this._LENGTH)
-        const text = buf.toString('ascii', this._LENGTH+2, this._LENGTH+2+length)
+        const pbc = readBufferField(buf, 'PBC')
+        const ver = readBufferField(buf, 'VER')
+        const flags = readBufferField(buf, 'FLAGS')
+        const screen = readBufferField(buf, 'SCREEN')
+        const index = readBufferField(buf, 'INDEX')
+        const control = readBufferField(buf, 'CONTROL')
+        const textLength = readBufferField(buf, 'LENGTH')
+        const textStart = fieldOffsets.LENGTH + fieldSizes.LENGTH;
+        const text = buf.toString('ascii', textStart, textStart + textLength)
 
         const tally: TallyMessage = {
             sender: source ? source : undefined,
@@ -135,7 +193,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
             screen,
             index,
             control,
-            length,
+            length: textLength,
             display: {
                 text,
                 rh_tally: (control >> 0 & 0b11) as TallyColor,
@@ -156,8 +214,8 @@ class TSL5 extends EventEmitter<TSL5Events> {
             tally.index = 1 //default to index 1
         }
 
-        bufUMD.writeUInt16LE(tally.screen, this._SCREEN)
-        bufUMD.writeUInt16LE(tally.index,  this._INDEX)
+        writeBufferField(bufUMD, 'SCREEN', tally.screen)
+        writeBufferField(bufUMD, 'INDEX', tally.index)
 
         if (tally.display) {
             let display = tally.display
@@ -166,7 +224,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 let text    = Buffer.from(display.text)
                 let lenText = Buffer.byteLength(text)
 
-                bufUMD.writeUInt16LE(lenText, this._LENGTH)
+                writeBufferField(bufUMD, 'LENGTH', lenText)
                 bufUMD = Buffer.concat([bufUMD, text]) //append text
             }
             if (!display.brightness) {
@@ -179,11 +237,14 @@ class TSL5 extends EventEmitter<TSL5Events> {
             control |= display.lh_tally << 4
             control |= display.brightness << 6
 
-            bufUMD.writeUInt16LE(control, this._CONTROL)
+            writeBufferField(bufUMD, 'CONTROL', control)
         }
         //Calc length and write PBC
-        let msgLength = Buffer.byteLength(bufUMD) - 2
-        bufUMD.writeUInt16LE(msgLength, this._PBC)
+        let msgLength = Buffer.byteLength(bufUMD) - fieldSizes.PBC
+        writeBufferField(bufUMD, 'PBC', msgLength)
+        //Write VER and FLAGS
+        writeBufferField(bufUMD, 'VER', this._VER)
+        writeBufferField(bufUMD, 'FLAGS', 0x00) //no flags currently defined
 
         //Add DLE/STX and stuffing if needed
         if (sequence) {
