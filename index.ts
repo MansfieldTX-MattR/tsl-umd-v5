@@ -101,7 +101,7 @@ const maxPayloadSize = maxPacketSize - messageHeaderSize; // The maximum payload
 
 function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extraOffset: number = 0, excludeHeader: boolean = false): number {
     let offset = fieldOffsets[field] + extraOffset;
-    if (excludeHeader && field in headerFieldSizes) {
+    if (excludeHeader && !(field in headerFieldSizes)) {
         offset -= messageHeaderSize;
     }
     const size = fieldSizes[field];
@@ -117,7 +117,7 @@ function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extr
 
 function writeBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, value: number, extraOffset: number = 0, excludeHeader: boolean = false): void {
     let offset = fieldOffsets[field] + extraOffset;
-    if (excludeHeader && field in headerFieldSizes) {
+    if (excludeHeader && !(field in headerFieldSizes)) {
         offset -= messageHeaderSize;
     }
     const size = fieldSizes[field];
@@ -295,13 +295,14 @@ class TSL5 extends EventEmitter<TSL5Events> {
 
     private wrapDmsgPacket(screen: number, payload: Buffer<ArrayBuffer>, sequence?: boolean): Buffer<ArrayBuffer> {
         // Add PBC, VER, FLAGS, SCREEN to the beginning of the payload
-        const header = Buffer.alloc(12);
-        writeBufferField(header, 'PBC', Buffer.byteLength(payload));
+        const header = Buffer.alloc(messageHeaderSize);
         writeBufferField(header, 'VER', this._VER);
         writeBufferField(header, 'FLAGS', 0x00); // No flags currently defined
         writeBufferField(header, 'SCREEN', screen); // Set the screen index
 
         let packetBuf = Buffer.concat([header, payload]);
+        const pbcValue = Buffer.byteLength(packetBuf) - fieldSizes.PBC;
+        writeBufferField(packetBuf, 'PBC', pbcValue);
 
         // Add DLE/STX and stuffing if needed
         if (sequence) {
@@ -312,7 +313,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
     }
 
     constructPacket(tally: Tally, sequence?: boolean, dmsgOnly?: boolean): Buffer<ArrayBuffer> {
-        let bufUMD = Buffer.alloc(dmsgOnly ? messageDmsgMinSize : 12)
+        let bufUMD = Buffer.alloc(dmsgOnly ? messageDmsgMinSize : messageHeaderSize + messageDmsgMinSize)
         const excludeHeader = dmsgOnly ? true : false;
 
         if (tally.index !== 0 && !tally.index) {
