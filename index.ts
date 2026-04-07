@@ -93,8 +93,8 @@ const dmsgFieldSizes: MessageDmsgFieldInfo = {
     LENGTH: fieldSizes.LENGTH,
 }
 
-const messageHeaderSize = Object.values(headerFieldSizes).reduce((sum, size) => sum + size, 0);
-const messageDmsgMinSize = Object.values(dmsgFieldSizes).reduce((sum, size) => sum + size, 0);
+const messageHeaderSize: number = Object.values(headerFieldSizes).reduce((sum, size) => sum + size, 0);
+const messageDmsgMinSize: number = Object.values(dmsgFieldSizes).reduce((sum, size) => sum + size, 0);
 const maxPacketSize = 2048; // TSL 5 specification allows for a maximum packet size of 2048 bytes
 const maxPayloadSize = maxPacketSize - messageHeaderSize; // The maximum payload (dmsg) size after accounting for the header
 
@@ -329,14 +329,14 @@ class TSL5 extends EventEmitter<TSL5Events> {
         if (tally.display) {
             let display = tally.display
 
-            if (display.text){
+            if (display.text !== undefined) {
                 let text    = Buffer.from(display.text)
                 let lenText = Buffer.byteLength(text)
 
                 writeBufferField(bufUMD, 'LENGTH', lenText, 0, excludeHeader)
                 bufUMD = Buffer.concat([bufUMD, text]) //append text
             }
-            if (!display.brightness) {
+            if (display.brightness === undefined) {
                 display.brightness = 3 //default to brightness 3
             }
 
