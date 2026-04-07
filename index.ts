@@ -79,9 +79,30 @@ const fieldOffsets: MessageFieldInfo = {
     LENGTH: 10,
 } as const;
 
+const headerFieldSizes: MessageHeaderFieldInfo = {
+    PBC: fieldSizes.PBC,
+    VER: fieldSizes.VER,
+    FLAGS: fieldSizes.FLAGS,
+    SCREEN: fieldSizes.SCREEN,
+}
 
-function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extraOffset: number = 0): number {
-    const offset = fieldOffsets[field] + extraOffset;
+const dmsgFieldSizes: MessageDmsgFieldInfo = {
+    INDEX: fieldSizes.INDEX,
+    CONTROL: fieldSizes.CONTROL,
+    LENGTH: fieldSizes.LENGTH,
+}
+
+const messageHeaderSize = Object.values(headerFieldSizes).reduce((sum, size) => sum + size, 0);
+const messageDmsgMinSize = Object.values(dmsgFieldSizes).reduce((sum, size) => sum + size, 0);
+const maxPacketSize = 2048; // TSL 5 specification allows for a maximum packet size of 2048 bytes
+const maxPayloadSize = maxPacketSize - messageHeaderSize; // The maximum payload (dmsg) size after accounting for the header
+
+
+function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extraOffset: number = 0, excludeHeader: boolean = false): number {
+    let offset = fieldOffsets[field] + extraOffset;
+    if (excludeHeader && field in headerFieldSizes) {
+        offset -= messageHeaderSize;
+    }
     const size = fieldSizes[field];
     switch (size) {
         case 1:
@@ -93,8 +114,11 @@ function readBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, extr
     }
 }
 
-function writeBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, value: number, extraOffset: number = 0): void {
-    const offset = fieldOffsets[field] + extraOffset;
+function writeBufferField(buf: Buffer<ArrayBuffer>, field: MessageFieldName, value: number, extraOffset: number = 0, excludeHeader: boolean = false): void {
+    let offset = fieldOffsets[field] + extraOffset;
+    if (excludeHeader && field in headerFieldSizes) {
+        offset -= messageHeaderSize;
+    }
     const size = fieldSizes[field];
     switch (size) {
         case 1:
@@ -207,15 +231,74 @@ class TSL5 extends EventEmitter<TSL5Events> {
         this.emit('message', tally)
     }
 
-    constructPacket(tally: Tally, sequence?: boolean): Buffer<ArrayBuffer> {
-        let bufUMD = Buffer.alloc(12)
+    constructPackets(tallies: Tally[], sequence?: boolean): Buffer<ArrayBuffer>[] {
+        const screenIndices = new Set(tallies.map(t => t.screen));
+        if (screenIndices.size !== 1) {
+            throw new Error('All tallies must have the same screen index to be sent in a single packet.');
+        }
+        const screenIndex = screenIndices.values().next().value;
+        if (screenIndex === undefined) {
+            throw new Error('At least one tally must be provided to construct packets.');
+        }
+
+        const packets: Buffer<ArrayBuffer>[] = [];
+        let currentPacketTallies: Tally[] = [];
+        let currentPacketDmsgBuffer = Buffer.alloc(0);
+        let currentPacketSize = 0;
+
+        for (const tally of tallies) {
+            const displayPacket = this.constructPacket(tally, false, true);
+            const tallySize = Buffer.byteLength(displayPacket);
+            if (currentPacketSize + tallySize > maxPayloadSize) {
+                const fullPacket = this.wrapDmsgPacket(screenIndex, currentPacketDmsgBuffer, sequence);
+                packets.push(fullPacket);
+                currentPacketTallies = [];
+                currentPacketDmsgBuffer = Buffer.alloc(0);
+                currentPacketSize = 0;
+            }
+            currentPacketTallies.push(tally);
+            currentPacketDmsgBuffer = Buffer.concat([currentPacketDmsgBuffer, displayPacket]);
+            currentPacketSize += tallySize;
+        }
+
+        if (currentPacketTallies.length > 0) {
+            const fullPacket = this.wrapDmsgPacket(screenIndex, currentPacketDmsgBuffer, sequence);
+            packets.push(fullPacket);
+        }
+        return packets;
+    }
+
+    private wrapDmsgPacket(screen: number, payload: Buffer<ArrayBuffer>, sequence?: boolean): Buffer<ArrayBuffer> {
+        // Add PBC, VER, FLAGS, SCREEN to the beginning of the payload
+        const header = Buffer.alloc(12);
+        writeBufferField(header, 'PBC', Buffer.byteLength(payload));
+        writeBufferField(header, 'VER', this._VER);
+        writeBufferField(header, 'FLAGS', 0x00); // No flags currently defined
+        writeBufferField(header, 'SCREEN', screen); // Set the screen index
+
+        let packetBuf = Buffer.concat([header, payload]);
+
+        // Add DLE/STX and stuffing if needed
+        if (sequence) {
+            return this.stuffDLESTX(packetBuf)
+        } else {
+            return packetBuf;
+        }
+    }
+
+    constructPacket(tally: Tally, sequence?: boolean, dmsgOnly?: boolean): Buffer<ArrayBuffer> {
+        let bufUMD = Buffer.alloc(dmsgOnly ? messageDmsgMinSize : 12)
+        const excludeHeader = dmsgOnly ? true : false;
 
         if (tally.index !== 0 && !tally.index) {
             tally.index = 1 //default to index 1
         }
 
-        writeBufferField(bufUMD, 'SCREEN', tally.screen)
-        writeBufferField(bufUMD, 'INDEX', tally.index)
+        if (!dmsgOnly) {
+            // The screen field is outside of the DMSG
+            writeBufferField(bufUMD, 'SCREEN', tally.screen, 0, excludeHeader)
+        }
+        writeBufferField(bufUMD, 'INDEX', tally.index, 0, excludeHeader)
 
         if (tally.display) {
             let display = tally.display
@@ -224,7 +307,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 let text    = Buffer.from(display.text)
                 let lenText = Buffer.byteLength(text)
 
-                writeBufferField(bufUMD, 'LENGTH', lenText)
+                writeBufferField(bufUMD, 'LENGTH', lenText, 0, excludeHeader)
                 bufUMD = Buffer.concat([bufUMD, text]) //append text
             }
             if (!display.brightness) {
@@ -237,36 +320,46 @@ class TSL5 extends EventEmitter<TSL5Events> {
             control |= display.lh_tally << 4
             control |= display.brightness << 6
 
-            writeBufferField(bufUMD, 'CONTROL', control)
+            writeBufferField(bufUMD, 'CONTROL', control, 0, excludeHeader)
         }
-        //Calc length and write PBC
-        let msgLength = Buffer.byteLength(bufUMD) - fieldSizes.PBC
-        writeBufferField(bufUMD, 'PBC', msgLength)
-        //Write VER and FLAGS
-        writeBufferField(bufUMD, 'VER', this._VER)
-        writeBufferField(bufUMD, 'FLAGS', 0x00) //no flags currently defined
+
+        if (!dmsgOnly) {
+            //Calc length and write PBC
+            // excludeHeader should be true here
+            let msgLength = Buffer.byteLength(bufUMD) - fieldSizes.PBC
+            writeBufferField(bufUMD, 'PBC', msgLength)
+            //Write VER and FLAGS
+            writeBufferField(bufUMD, 'VER', this._VER)
+            writeBufferField(bufUMD, 'FLAGS', 0x00) //no flags currently defined
+        }
 
         //Add DLE/STX and stuffing if needed
-        if (sequence) {
-            let packetBuf = Buffer.from([this._DLE, this._STX])
-
-            for(let i = 0; i < bufUMD.length; i++) {
-                if (bufUMD[i] == this._DLE) {
-                    packetBuf = Buffer.concat([packetBuf, Buffer.from([this._DLE, this._DLE])])
-                } else {
-                    packetBuf = Buffer.concat([packetBuf, Buffer.from([bufUMD[i]])])
-                }
-            }
-            return packetBuf
-
+        if (sequence && !dmsgOnly) {
+            return this.stuffDLESTX(bufUMD)
         } else {
             return bufUMD
         }
     }
 
-    sendTallyUDP(ip: string, port: number, tally: Tally, sequence?: boolean) {
+    private stuffDLESTX(bufUMD: Buffer<ArrayBuffer>): Buffer<ArrayBuffer> {
+        let packetBuf = Buffer.from([this._DLE, this._STX])
+
+        for(let i = 0; i < bufUMD.length; i++) {
+            if (bufUMD[i] == this._DLE) {
+                packetBuf = Buffer.concat([packetBuf, Buffer.from([this._DLE, this._DLE])])
+            } else {
+                packetBuf = Buffer.concat([packetBuf, Buffer.from([bufUMD[i]])])
+            }
+        }
+        return packetBuf
+    }
+
+    sendTallyUDP(ip: string, port: number, tally: Tally|Tally[], sequence?: boolean): Promise<void> {
+        if (!Array.isArray(tally)) {
+            tally = [tally]
+        }
         try {
-            if (!ip || !port || !tally){
+            if (!ip || !port || !tally || tally.length === 0){
                 throw 'Missing Parameter from call sendTallyUDP()'
             }
             if (sequence === undefined) {
@@ -274,27 +367,53 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 sequence = false
             }
 
-            let msg = this.constructPacket(tally, sequence)
-
-            let client = dgram.createSocket('udp4')
-
-            client.send(msg, port, ip, function(error) {
-                if (error) {
-                    debug('Error sending TSL 5 UDP tally:', error)
-                } else {
-                    debug('TSL 5 UDP Data sent.')
-                }
-                client.close()
-            });
+            const packets = this.constructPackets(tally, sequence)
+            return this.sendPacketsUDP(ip, port, packets)
         }
         catch (error) {
             debug('Error sending TSL 5 UDP tally:', error);
+            return Promise.reject(error);
         }
     }
 
-    sendTallyTCP(ip: string, port: number, tally: Tally, sequence?: boolean) {
+    async sendPacketsUDP(ip: string, port: number, packets: Buffer<ArrayBuffer>[]) {
+        const allPromises: Promise<void>[] = [];
         try {
-            if (!ip || !port || !tally){
+            if (!ip || !port || !packets || packets.length === 0){
+                throw 'Missing Parameter from call sendPacketsUDP()'
+            }
+
+            let client = dgram.createSocket('udp4')
+
+            for (const packet of packets) {
+                const sendPromise = new Promise<void>((resolve, reject) => {
+                    client.send(packet, port, ip, function(error) {
+                        if (error) {
+                            debug('Error sending TSL 5 UDP tally:', error)
+                            reject(error);
+                        } else {
+                            debug('TSL 5 UDP Data sent.')
+                            resolve();
+                        }
+                    });
+                });
+                allPromises.push(sendPromise);
+            }
+            await Promise.all(allPromises);
+            client.close()
+        }
+        catch (error) {
+            debug('Error sending TSL 5 UDP tally:', error);
+            return Promise.reject(error);
+        }
+    }
+
+    sendTallyTCP(ip: string, port: number, tally: Tally|Tally[], sequence?: boolean): Promise<void> {
+        if (!Array.isArray(tally)) {
+            tally = [tally]
+        }
+        try {
+            if (!ip || !port || !tally || tally.length === 0){
                 throw 'Missing Parameter from call sendTallyTCP()'
             }
             if (sequence === undefined) {
@@ -302,24 +421,48 @@ class TSL5 extends EventEmitter<TSL5Events> {
                 sequence = true
             }
 
-            let msg = this.constructPacket(tally, sequence)
-
-            let client = new net.Socket()
-            client.connect(port, ip);
-
-            client.on('connect', () => {
-                client.write(msg)
-                client.end()
-                client.destroy()
-                debug('TSL 5 TCP Data sent.')
-
-            })
-            client.on('error', (error) => {
-                debug('Error sending TSL 5 TCP tally:', error)
-            })
+            const packets = this.constructPackets(tally, sequence)
+            return this.sendPacketsTCP(ip, port, packets, sequence)
         }
         catch (error) {
             debug('Error sending TSL 5 TCP tally:', error);
+            return Promise.reject(error);
+        }
+    }
+
+    async sendPacketsTCP(ip: string, port: number, packets: Buffer<ArrayBuffer>[], sequence?: boolean) {
+        try {
+            if (!ip || !port || !packets || packets.length === 0){
+                throw 'Missing Parameter from call sendPacketsTCP()'
+            }
+            if (sequence === undefined) {
+                debug('Adding DLE/STX sequence by default for TCP.')
+                sequence = true
+            }
+
+            const sendPromise = new Promise<void>((resolve, reject) => {
+                let client = new net.Socket()
+                client.connect(port, ip);
+
+                client.on('connect', () => {
+                    for (const packet of packets) {
+                        client.write(packet)
+                    }
+                    client.end()
+                    client.destroy()
+                    debug('TSL 5 TCP Data sent.')
+                    resolve();
+                })
+                client.on('error', (error) => {
+                    debug('Error sending TSL 5 TCP tally:', error)
+                    reject(error);
+                })
+            });
+            await sendPromise;
+        }
+        catch (error) {
+            debug('Error sending TSL 5 TCP tally:', error);
+            return Promise.reject(error);
         }
     }
 }
