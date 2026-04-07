@@ -43,6 +43,7 @@ export interface TallyMessage {
 
 interface TSL5Events {
     message: [TallyMessage];
+    messages: [TallyMessage[]];
 }
 interface MessageHeaderFieldInfo {
     PBC: number;
@@ -150,7 +151,11 @@ class TSL5 extends EventEmitter<TSL5Events> {
         server.bind(port)
 
         server.on('message',(msg, rinfo) => {
-            this.processTally(msg, rinfo.address)
+            const tallies = this.processTallies(msg, rinfo.address)
+            this.emit('messages', tallies)
+            for (const tally of tallies) {
+                this.emit('message', tally)
+            }
             debug('UDP Message recieved: ', msg)
         })
 
@@ -169,7 +174,11 @@ class TSL5 extends EventEmitter<TSL5Events> {
         var server = net.createServer((socket) => {
 
             socket.on('data', (data) => {
-                this.processTally(data, socket.remoteAddress)
+                const tallies = this.processTallies(data, socket.remoteAddress)
+                this.emit('messages', tallies)
+                for (const tally of tallies) {
+                    this.emit('message', tally)
+                }
                 debug('TCP Message recieved: ', data)
             })
 
@@ -185,7 +194,7 @@ class TSL5 extends EventEmitter<TSL5Events> {
         server.listen(port)
     }
 
-    processTally(data: Buffer<ArrayBuffer>|string, source?: string) {
+    processTallies(data: Buffer<ArrayBuffer>|string, source?: string): TallyMessage[] {
         let buf = Buffer.from(data)
 
         //Strip DLE/STX if present and un-stuff any DLE stuffing
@@ -203,32 +212,48 @@ class TSL5 extends EventEmitter<TSL5Events> {
         const ver = readBufferField(buf, 'VER')
         const flags = readBufferField(buf, 'FLAGS')
         const screen = readBufferField(buf, 'SCREEN')
-        const index = readBufferField(buf, 'INDEX')
-        const control = readBufferField(buf, 'CONTROL')
-        const textLength = readBufferField(buf, 'LENGTH')
-        const textStart = fieldOffsets.LENGTH + fieldSizes.LENGTH;
-        const text = buf.toString('ascii', textStart, textStart + textLength)
 
-        const tally: TallyMessage = {
-            sender: source ? source : undefined,
-            pbc,
-            ver,
-            flags,
-            screen,
-            index,
-            control,
-            length: textLength,
-            display: {
-                text,
-                rh_tally: (control >> 0 & 0b11) as TallyColor,
-                text_tally: (control >> 2 & 0b11) as TallyColor,
-                lh_tally: (control >> 4 & 0b11) as TallyColor,
-                brightness: (control >> 6 & 0b11) as TallyColor,
-                reserved: (control >> 8 & 0b1111111),
-                control_data: (control >> 15 & 0b1),
-            }
+        // Loop through the buffer to extract multiple tallies if present
+        let offset = messageHeaderSize; // Start after the header
+        const tallies: TallyMessage[] = [];
+
+        const bufferLengthBytes = Buffer.byteLength(buf);
+        if (bufferLengthBytes < messageHeaderSize) {
+            debug('Received buffer is too short to contain a valid message header.');
+            return [];
         }
-        this.emit('message', tally)
+
+        while (offset < bufferLengthBytes) {
+            const index = readBufferField(buf, 'INDEX', offset, true);
+            const control = readBufferField(buf, 'CONTROL', offset, true);
+            const textLength = readBufferField(buf, 'LENGTH', offset, true);
+            const textStart = offset - messageHeaderSize + fieldOffsets.LENGTH + fieldSizes.LENGTH;
+            const text = buf.toString('ascii', textStart, textStart + textLength);
+            const dmsgLength = messageDmsgMinSize + textLength;
+
+            const tally: TallyMessage = {
+                sender: source ? source : undefined,
+                pbc,
+                ver,
+                flags,
+                screen,
+                index,
+                control,
+                length: textLength,
+                display: {
+                    text,
+                    rh_tally: (control >> 0 & 0b11) as TallyColor,
+                    text_tally: (control >> 2 & 0b11) as TallyColor,
+                    lh_tally: (control >> 4 & 0b11) as TallyColor,
+                    brightness: (control >> 6 & 0b11) as TallyColor,
+                    reserved: (control >> 8 & 0b1111111),
+                    control_data: (control >> 15 & 0b1),
+                }
+            }
+            tallies.push(tally);
+            offset += dmsgLength; // Move to the next DMSG
+        }
+        return tallies;
     }
 
     constructPackets(tallies: Tally[], sequence?: boolean): Buffer<ArrayBuffer>[] {
